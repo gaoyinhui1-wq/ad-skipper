@@ -1,0 +1,216 @@
+name: Build AdSkipper Multilingual v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-multilingual-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.1.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Add multilingual splash skipping (keeps YouTube mute logic)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > app/src/main/java/dev/javid/adskipper/SplashSkipHandler.java <<'JAVA_EOF'
+          package dev.javid.adskipper;
+          
+          import android.accessibilityservice.AccessibilityService;
+          import android.graphics.Rect;
+          import android.os.SystemClock;
+          import android.util.DisplayMetrics;
+          import android.view.accessibility.AccessibilityEvent;
+          import android.view.accessibility.AccessibilityNodeInfo;
+          import java.text.Normalizer;
+          import java.util.ArrayDeque;
+          import java.util.Arrays;
+          import java.util.HashSet;
+          import java.util.Locale;
+          import java.util.Set;
+          import java.util.regex.Pattern;
+          
+          /** Extra splash-screen skipper; YouTube ad scanning and muting remain upstream. */
+          final class SplashSkipHandler {
+              private static final long WINDOW_MS = 10000L;
+              private static final long THROTTLE_MS = 250L;
+              private static final int MAX_NODES = 400;
+              private static final int MAX_PARENT_HOPS = 4;
+              // Exact labels, rather than broad substring rules, to avoid tapping normal content.
+              private static final Set<String> LABELS = new HashSet<>(Arrays.asList(
+                  // English
+                  "skip", "skip now", "skip ad", "skip ads", "skip this ad", "skip the ad",
+                  "skip video ad", "skip video ads", "skip advert", "skip adverts",
+                  "skip advertisement", "skip advertisements", "skip this advertisement",
+                  "skip promotional ad", "skip promotion", "skip splash ad", "skip opening ad",
+                  "close ad", "close ads", "close this ad", "close advertisement",
+                  "dismiss ad", "dismiss ads", "dismiss this ad", "dismiss advertisement",
+                  // Simplified Chinese
+                  "跳过", "跳过广告", "跳过此广告", "跳过本广告", "跳过开屏广告",
+                  "跳过启动广告", "跳过推广", "跳过推广广告", "点击跳过",
+                  "关闭广告", "关闭此广告", "关闭开屏广告", "略过广告",
+                  // Traditional Chinese
+                  "跳過", "跳過廣告", "跳過此廣告", "跳過本廣告", "跳過開屏廣告",
+                  "跳過啟動廣告", "跳過推廣", "跳過推廣廣告", "點擊跳過",
+                  "關閉廣告", "關閉此廣告", "關閉開屏廣告", "略過廣告",
+                  // Japanese / Korean optional fallback
+                  "スキップ", "広告をスキップ", "広告を閉じる", "건너뛰기", "광고 건너뛰기", "광고 닫기"
+              ));
+              private static final Pattern SPACES = Pattern.compile("\\s+");
+              private static final Pattern DECORATION = Pattern.compile("[›»>→❯❱×✕✖]+$");
+              // Countdowns such as 'Skip 3', 'Skip 3s', '跳过 3秒', '跳過5s'.
+              // Only matched within the small splash window and upper-right screen area.
+              private static final Pattern COUNTDOWN = Pattern.compile(
+                  "^(?:skip|跳过|跳過)(?:\\s*(?:ad|ads|advertisement|广告|廣告))?\\s*[0-9]{1,2}\\s*(?:s|sec|secs|seconds|秒)?$",
+                  Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+          
+              private String lastPackage = "";
+              private long enteredAt = 0L;
+              private long lastScan = 0L;
+              private boolean clicked = false;
+          
+              void onEvent(AccessibilityService service, AccessibilityEvent event) {
+                  if (event == null || event.getPackageName() == null) return;
+                  String pkg = event.getPackageName().toString();
+                  if (pkg.isEmpty()) return;
+                  long now = SystemClock.uptimeMillis();
+                  if (!pkg.equals(lastPackage)) {
+                      lastPackage = pkg;
+                      enteredAt = now;
+                      lastScan = 0L;
+                      clicked = false;
+                  }
+                  if (excluded(pkg, service.getPackageName()) || clicked || now - enteredAt > WINDOW_MS
+                          || now - lastScan < THROTTLE_MS) return;
+                  lastScan = now;
+                  AccessibilityNodeInfo root = service.getRootInActiveWindow();
+                  if (root == null || root.getPackageName() == null
+                          || !pkg.equals(root.getPackageName().toString())) return;
+                  DisplayMetrics screen = service.getResources().getDisplayMetrics();
+                  ArrayDeque<AccessibilityNodeInfo> queue = new ArrayDeque<>();
+                  queue.add(root);
+                  int seen = 0;
+                  while (!queue.isEmpty() && seen++ < MAX_NODES) {
+                      AccessibilityNodeInfo node = queue.removeFirst();
+                      if (node.isVisibleToUser() && matchesNode(node) && inSkipArea(node, screen)) {
+                          AccessibilityNodeInfo target = node;
+                          for (int hop = 0; target != null && hop <= MAX_PARENT_HOPS;
+                                  target = target.getParent(), hop++) {
+                              if (target.isClickable() && isSafeClickTarget(target, screen)
+                                      && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                                  clicked = true;
+                                  return;
+                              }
+                          }
+                      }
+                      int size = Math.min(node.getChildCount(), 30);
+                      for (int i = 0; i < size; i++) {
+                          AccessibilityNodeInfo child = node.getChild(i);
+                          if (child != null) queue.add(child);
+                      }
+                  }
+              }
+          
+              private static boolean excluded(String pkg, String self) {
+                  return pkg.equals(self) || pkg.equals("com.google.android.youtube")
+                      || pkg.equals("android") || pkg.equals("com.android.systemui")
+                      || pkg.equals("com.android.settings") || pkg.equals("com.google.android.permissioncontroller")
+                      || pkg.equals("com.samsung.android.permissioncontroller")
+                      || pkg.equals("com.samsung.android.oneui.home") || pkg.equals("com.sec.android.app.launcher")
+                      || pkg.equals("com.google.android.apps.nexuslauncher");
+              }
+          
+              private static boolean matchesNode(AccessibilityNodeInfo node) {
+                  return matchesText(node.getText()) || matchesText(node.getContentDescription());
+              }
+          
+              private static boolean matchesText(CharSequence raw) {
+                  if (raw == null) return false;
+                  String value = Normalizer.normalize(raw.toString(), Normalizer.Form.NFKC)
+                          .trim().toLowerCase(Locale.ROOT);
+                  value = SPACES.matcher(value).replaceAll(" ");
+                  value = DECORATION.matcher(value).replaceAll("").trim();
+                  if (LABELS.contains(value)) return true;
+                  // Permit a short countdown suffix without matching phrases like "Skip intro".
+                  return COUNTDOWN.matcher(value).matches();
+              }
+          
+              private static boolean inSkipArea(AccessibilityNodeInfo node, DisplayMetrics dm) {
+                  Rect bounds = new Rect();
+                  node.getBoundsInScreen(bounds);
+                  return !bounds.isEmpty() && bounds.centerX() >= dm.widthPixels * .52f
+                          && bounds.centerY() <= dm.heightPixels * .38f
+                          && bounds.width() <= dm.widthPixels * .65f
+                          && bounds.height() <= dm.heightPixels * .20f;
+              }
+          
+              private static boolean isSafeClickTarget(AccessibilityNodeInfo node, DisplayMetrics dm) {
+                  Rect r = new Rect();
+                  node.getBoundsInScreen(r);
+                  return !r.isEmpty() && r.width() <= dm.widthPixels * .70f
+                          && r.height() <= dm.heightPixels * .24f;
+              }
+          }
+          JAVA_EOF
+          python3 - <<'PY_PATCH'
+          from pathlib import Path
+          path = Path('app/src/main/java/dev/javid/adskipper/SkipAdAccessibilityService.java')
+          source = path.read_text(encoding='utf-8')
+          anchor = '    private final Handler handler = new Handler(Looper.getMainLooper());'
+          event_anchor = '            eventsSeen++;'
+          if source.count(anchor) != 1 or source.count(event_anchor) != 1:
+              raise RuntimeError('Upstream code changed: patch anchor not found')
+          source = source.replace(anchor,
+              '    private final SplashSkipHandler splashSkip = new SplashSkipHandler();\n' + anchor, 1)
+          source = source.replace(event_anchor, event_anchor +
+              '\n            splashSkip.onEvent(this, event);', 1)
+          path.write_text(source, encoding='utf-8')
+
+          config = Path('app/src/main/res/xml/accessibility_service_config.xml')
+          xml = config.read_text(encoding='utf-8')
+          if 'android:packageNames="com.google.android.youtube"' not in xml:
+              raise RuntimeError('Upstream accessibility config changed')
+          import re
+          xml = re.sub(r'\s+android:packageNames="com\.google\.android\.youtube"', '', xml, count=1)
+          xml = xml.replace('android:isAccessibilityTool="true"',
+                            'android:isAccessibilityTool="false"')
+          config.write_text(xml, encoding='utf-8')
+
+          # Remove inaccurate claim that the broadened service can read YouTube only.
+          strings = Path('app/src/main/res/values/strings.xml')
+          content = strings.read_text(encoding='utf-8')
+          old = ('It watches YouTube and its picture-in-picture window only, '
+                 'reads screen content from YouTube only, and the sole action '
+                 'it performs is pressing that one control.')
+          new = ('It reads accessible text from the current app to click a '
+                 'recognised splash-ad Skip button during the first 10 seconds '
+                 'after switching to that app. It also monitors YouTube ads to '
+                 'skip them or mute their audio. No screen content is sent over the network.')
+          if old not in content:
+              raise RuntimeError('Upstream service description changed')
+          strings.write_text(content.replace(old, new, 1), encoding='utf-8')
+          PY_PATCH
+      - name: Build Debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AdSkipper-Multilingual-v2-debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

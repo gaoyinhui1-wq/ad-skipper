@@ -1,4 +1,4 @@
-name: Build AdSkipper Multilingual v3 (SDK Fix)
+name: Build AdSkipper Multilingual v3 (SDK Fixed v4)
 
 on:
   workflow_dispatch:
@@ -19,11 +19,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v4
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools"
+          packages: ''
       - name: Install SDK 36
-        run: sdkmanager --install "platforms;android-36" "build-tools;36.1.0"
+        run: sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.1.0"
       - uses: gradle/actions/setup-gradle@v4
       - name: Add multilingual splash skipping (keeps YouTube mute logic)
         shell: bash
@@ -59,25 +60,25 @@ jobs:
                   "skip video ad", "skip video ads", "skip advert", "skip adverts",
                   "skip advertisement", "skip advertisements", "skip this advertisement",
                   "skip promotional ad", "skip promotion", "skip splash ad", "skip opening ad",
-                  "close ad", "close ads", "close this ad", "close advertisement",
+                  "close", "close ad", "close ads", "close this ad", "close advertisement",
                   "dismiss ad", "dismiss ads", "dismiss this ad", "dismiss advertisement",
                   // Simplified Chinese
                   "跳过", "跳过广告", "跳过此广告", "跳过本广告", "跳过开屏广告",
                   "跳过启动广告", "跳过推广", "跳过推广广告", "点击跳过",
-                  "关闭广告", "关闭此广告", "关闭开屏广告", "略过广告",
+                  "关闭", "关闭广告", "关闭此广告", "关闭开屏广告", "略过", "略过广告",
                   // Traditional Chinese
                   "跳過", "跳過廣告", "跳過此廣告", "跳過本廣告", "跳過開屏廣告",
                   "跳過啟動廣告", "跳過推廣", "跳過推廣廣告", "點擊跳過",
-                  "關閉廣告", "關閉此廣告", "關閉開屏廣告", "略過廣告",
+                  "關閉", "關閉廣告", "關閉此廣告", "關閉開屏廣告", "略過", "略過廣告",
                   // Japanese / Korean optional fallback
                   "スキップ", "広告をスキップ", "広告を閉じる", "건너뛰기", "광고 건너뛰기", "광고 닫기"
               ));
               private static final Pattern SPACES = Pattern.compile("\\s+");
               private static final Pattern DECORATION = Pattern.compile("[›»>→❯❱×✕✖]+$");
-              // Countdowns such as 'Skip 3', 'Skip 3s', '跳过 3秒', '跳過5s'.
+              // Countdowns such as 'Skip 5', 'Skip 5s', '略過5s', '略過 5秒鐘'.
               // Only matched within the small splash window and upper-right screen area.
               private static final Pattern COUNTDOWN = Pattern.compile(
-                  "^(?:skip|跳过|跳過)(?:\\s*(?:ad|ads|advertisement|广告|廣告))?\\s*[0-9]{1,2}\\s*(?:s|sec|secs|seconds|秒)?$",
+                  "^(?:skip|跳过|跳過|略过|略過)(?:\\s*(?:ad|ads|advertisement|广告|廣告))?\\s*[0-9]{1,2}\\s*(?:s|sec|secs|seconds|秒|秒鐘|秒钟)?$",
                   Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
           
               private String lastPackage = "";
